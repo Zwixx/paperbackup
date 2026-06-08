@@ -32,7 +32,8 @@ import re
 import sys
 import hashlib
 import qrcode
-from tempfile import mkstemp
+import tempfile
+from io import BytesIO
 from datetime import datetime
 from PIL import Image
 from pyx import *
@@ -144,12 +145,20 @@ for bc in range(len(barcode_blocks)):
 finish_page(pdf, c, pgno)
 pgno += 1
 
-fd, temp_barcode_path = mkstemp('.pdf', 'qr_', '.')
-# will use pdf as the tmpfile has a .pdf suffix
-pdf.writetofile(temp_barcode_path)
+# write barcode PDF to temporary file, read into BytesIO, then delete
+with tempfile.NamedTemporaryFile(mode='w+b', suffix='.pdf', delete=False) as tmp:
+    temp_path = tmp.name
+
+pdf.writetofile(temp_path)
+
+# read the temporary file into BytesIO
+with open(temp_path, 'rb') as f:
+    barcode_pdf_bytes = BytesIO(f.read())
+
+# delete the temporary file
+os.remove(temp_path)
 
 # prepare plain text output
-fd, temp_text_path = mkstemp('.ps', 'text_', '.')
 input_file_modification = datetime.fromtimestamp(os.path.getmtime(input_path)).strftime("%Y-%m-%d %H:%M:%S")
 
 # split lines on plaintext_maxlinechars - ( checksum_size + separator size)
@@ -204,8 +213,8 @@ outlines.append("See https://github.com/intra2net/paperbackup/ for instructions"
 pagesize = A4 if paperformat_str == "A4" else letter
 
 # prepare the canvas with Courier font for monospace output
-fd, temp_text_path = mkstemp('.pdf', 'text_', '.')
-c = rl_canvas.Canvas(temp_text_path, pagesize=pagesize)
+text_pdf_bytes = BytesIO()
+c = rl_canvas.Canvas(text_pdf_bytes, pagesize=pagesize)
 
 # calculate font and margin sizes
 font_name = "Courier"
@@ -249,25 +258,23 @@ c.save()
 # merge the two PDFs (barcodes and text) using pypdf
 writer = PdfWriter()
 
-# read the barcode PDF
-with open(temp_barcode_path, "rb") as barcode_pdf:
-    reader = PdfReader(barcode_pdf)
-    for page in reader.pages:
-        writer.add_page(page)
+# seek to beginning of both BytesIO objects before reading
+barcode_pdf_bytes.seek(0)
+text_pdf_bytes.seek(0)
 
-# read the text PDF
-with open(temp_text_path, "rb") as text_pdf:
-    reader = PdfReader(text_pdf)
-    for page in reader.pages:
-        writer.add_page(page)
+# read the barcode PDF from BytesIO
+reader = PdfReader(barcode_pdf_bytes)
+for page in reader.pages:
+    writer.add_page(page)
+
+# read the text PDF from BytesIO
+reader = PdfReader(text_pdf_bytes)
+for page in reader.pages:
+    writer.add_page(page)
 
 # write the combined PDF
 with open(just_filename + ".pdf", "wb") as output_pdf:
     writer.write(output_pdf)
-
-# clean up temporary files
-os.remove(temp_text_path)
-os.remove(temp_barcode_path)
 
 print("Please now verify that the output can be restored by calling:")
 print("paperbackup-verify.sh {}.pdf".format(just_filename))
