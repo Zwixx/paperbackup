@@ -71,6 +71,9 @@ def create_barcode(chunkdata):
     qr.add_data(chunkdata)
     qr.make(fit=True)
     img = qr.make_image(fill_color="black", back_color="white")
+    # Convert to RGB to avoid warning about single channel image mode
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
     return img
 
 
@@ -89,12 +92,13 @@ if not os.path.isfile(input_path):
     raise RuntimeError('File {} not found'.format(input_path))
 just_filename = os.path.basename(input_path)
 
-with open(input_path) as inputfile:
-    ascdata = inputfile.read()
+# read file as binary to avoid encoding issues
+with open(input_path, 'rb') as inputfile:
+    ascdata_bytes = inputfile.read()
 
 # encode the entire input data to base64 for universal compatibility
 # this allows any character/binary data to be stored
-ascdata_b64 = base64.b64encode(ascdata.encode('utf-8')).decode('ascii')
+ascdata_b64 = base64.b64encode(ascdata_bytes).decode('ascii')
 
 # split the base64 encoded data into chunks of max_bytes_in_barcode size
 # each chunk begins with ^<sequence number><space>
