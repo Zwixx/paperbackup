@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 #
 # create a pdf with barcodes to backup text files on paper
@@ -31,12 +31,15 @@ import os
 import re
 import sys
 import hashlib
-import subprocess
 import qrcode
 from tempfile import mkstemp
 from datetime import datetime
 from PIL import Image
 from pyx import *
+from reportlab.pdfgen import canvas as rl_canvas
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.units import cm, inch
+from pypdf import PdfReader, PdfWriter
 
 # constants for the size and layout of the barcodes on page
 max_bytes_in_barcode = 140
@@ -196,36 +199,73 @@ outlines.append("--")
 outlines.append("Created with paperbackup.py")
 outlines.append("See https://github.com/intra2net/paperbackup/ for instructions")
 
-# use "enscript" to create postscript with the plaintext
-p = subprocess.Popen(
-        ["enscript", "-p"+temp_text_path, "-f", "Courier12",
-            "-M" + paperformat_str, "--header",
-            just_filename + "|" + input_file_modification + "|Page $%"],
-        stdout=subprocess.PIPE, stdin=subprocess.PIPE)
+# create plaintext PDF using reportlab instead of enscript
+# convert paperformat string to reportlab pagesize
+pagesize = A4 if paperformat_str == "A4" else letter
 
-# send the text to enscript
+# prepare the canvas with Courier font for monospace output
+fd, temp_text_path = mkstemp('.pdf', 'text_', '.')
+c = rl_canvas.Canvas(temp_text_path, pagesize=pagesize)
+
+# calculate font and margin sizes
+font_name = "Courier"
+font_size = 10
+margin = 0.5 * inch
+page_width, page_height = pagesize
+line_height = font_size * 1.2
+lines_per_page = int((page_height - 2 * margin) / line_height)
+
+# write the header and content
+header = "%s | %s | Page 1" % (just_filename, input_file_modification)
+page_num = 1
+line_num = 0
+y_position = page_height - margin
+
+# header on first page
+c.setFont(font_name, font_size - 2)
+c.drawString(margin, y_position, header)
+y_position -= line_height * 1.5
+
+# write all outline lines
+c.setFont(font_name, font_size)
 for line in outlines:
-    p.stdin.write(line.encode('utf-8'))
-    p.stdin.write(os.linesep.encode('utf-8'))
+    if line_num >= lines_per_page:
+        # new page
+        c.showPage()
+        page_num += 1
+        header = "%s | %s | Page %d" % (just_filename, input_file_modification, page_num)
+        c.setFont(font_name, font_size - 2)
+        c.drawString(margin, page_height - margin, header)
+        c.setFont(font_name, font_size)
+        y_position = page_height - margin - line_height * 1.5
+        line_num = 0
+    
+    c.drawString(margin, y_position, line)
+    y_position -= line_height
+    line_num += 1
 
-p.communicate()[0]
-p.stdin.close()
+c.save()
 
-if p.returncode != 0:
-    raise RuntimeError('error calling enscript')
+# merge the two PDFs (barcodes and text) using pypdf
+writer = PdfWriter()
 
-# combine both files with ghostscript
+# read the barcode PDF
+with open(temp_barcode_path, "rb") as barcode_pdf:
+    reader = PdfReader(barcode_pdf)
+    for page in reader.pages:
+        writer.add_page(page)
 
-ret = subprocess.call(["gs", "-dBATCH", "-dNOPAUSE", "-q", "-sDEVICE=pdfwrite",
-                       "-sOutputFile=" + just_filename + ".pdf",
-                       temp_barcode_path, temp_text_path])
-if ret != 0:
-    raise RuntimeError('error calling ghostscript')
+# read the text PDF
+with open(temp_text_path, "rb") as text_pdf:
+    reader = PdfReader(text_pdf)
+    for page in reader.pages:
+        writer.add_page(page)
 
-# using enscript and ghostscript to create the plaintext output is a hack,
-# using PyX and LaTeX would be more elegant. But I could not find an easy
-# solution to flow the text over several pages with PyX.
+# write the combined PDF
+with open(just_filename + ".pdf", "wb") as output_pdf:
+    writer.write(output_pdf)
 
+# clean up temporary files
 os.remove(temp_text_path)
 os.remove(temp_barcode_path)
 
