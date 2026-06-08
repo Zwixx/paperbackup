@@ -33,6 +33,7 @@ import sys
 import hashlib
 import qrcode
 import tempfile
+import base64
 from io import BytesIO
 from datetime import datetime
 from PIL import Image
@@ -91,22 +92,16 @@ just_filename = os.path.basename(input_path)
 with open(input_path) as inputfile:
     ascdata = inputfile.read()
 
-# only allow some harmless characters
-# this is much more strict than neccessary, but good enough for key files
-# you really need to forbid ^, NULL and anything that could upset enscript
-allowedchars = re.compile(r"^[A-Za-z0-9/=+:., #@!()\n-]*")
-allowedmatch = allowedchars.match(ascdata)
-if allowedmatch.group() != ascdata:
-    raise RuntimeError('Illegal char found at %d >%s<'
-                       % (len(allowedmatch.group()),
-                          ascdata[len(allowedmatch.group())]))
+# encode the entire input data to base64 for universal compatibility
+# this allows any character/binary data to be stored
+ascdata_b64 = base64.b64encode(ascdata.encode('utf-8')).decode('ascii')
 
-# split the ascdata into chunks of max_bytes_in_barcode size
+# split the base64 encoded data into chunks of max_bytes_in_barcode size
 # each chunk begins with ^<sequence number><space>
 # this allows to easily put them back together in the correct order
 barcode_blocks = []
 chunkdata = "^1 "
-for char in list(ascdata):
+for char in list(ascdata_b64):
     if len(chunkdata)+1 > max_bytes_in_barcode:
         # chunk is full -> create barcode from it
         barcode_blocks.append(create_barcode(chunkdata))
@@ -164,7 +159,7 @@ input_file_modification = datetime.fromtimestamp(os.path.getmtime(input_path)).s
 # split lines on plaintext_maxlinechars - ( checksum_size + separator size)
 splitat=plaintext_maxlinechars - 8
 splitlines=[]
-for line in ascdata.splitlines():
+for line in ascdata_b64.splitlines():
     while len(line) > splitat:
         splitlines.append(line[:splitat])
         # add a ^ at the beginning of the broken line to mark the linebreak
@@ -190,7 +185,7 @@ for line in splitlines:
     chksumlines.append(line)
 
 # we also want a checksum which the restored file should match
-checksum = hashlib.sha256(bytes(ascdata, 'utf8')).hexdigest()
+checksum = hashlib.sha256(bytes(ascdata_b64, 'utf8')).hexdigest()
 
 # add some documentation around the plaintest
 outlines=[]
@@ -200,28 +195,35 @@ outlines.append(coldoc)
 outlines.extend(chksumlines)
 outlines.append("")
 outlines.append("")
-outlines.append("sha256sum of input file:")
+outlines.append("DATA IS BASE64 ENCODED - Decode after restoration!")
+outlines.append("")
+outlines.append("sha256sum of base64 encoded data:")
 outlines.append("%s"%checksum)
 outlines += r"""
 
 --
 Created with paperbackup.py from https://github.com/intra2net/paperbackup/
+Data is stored in base64 encoding for universal compatibility.
+
 To restore, either scan this document into a file or use a webcam
 This shell script should restore the content inline
 
 /usr/bin/zbarimg --raw -Sdisable -Sqrcode.enable "$SCANNEDFILE" \
     | sed -e "s/\^/\x0/g" \
     | sort -z -n \
-    | sed ':a;N;$!ba;s/\n\x0[0-9]* //g;s/\x0[0-9]* //g;s/\n\x0//g'
+    | sed ':a;N;$!ba;s/\n\x0[0-9]* //g;s/\x0[0-9]* //g;s/\n\x0//g' \
+    | base64 -d
 
 # replace 'zbarimg \"$SCANNEDFILE\"' with 'zbarcam' if you have a
 # webcam instead of a scanned document
 
+# The output is base64 decoded at the end
 # algorithm:
 # 1. zbarimg ends each scanned code with a newline
 # 2. each barcode content begins with ^<number><space>
 # 3. convert that to \0<number><space>, so sort can sort on that
-# 4. then remove all \n\0<number><space> so we get the originial without \n
+# 4. then remove all \n\0<number><space> so we get the original without \n
+# 5. base64 -d decodes the base64 string back to the original data
 
 """.split("\n")
 
