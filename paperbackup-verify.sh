@@ -37,9 +37,9 @@ fi
 # Look for the SHA256 hash (64 hex characters) near "sha256sum" text
 bEmbedded=$(pdftotext "$PDF_FILE" - 2>/dev/null | grep -i "sha256sum" | sed -E 's/.*([a-f0-9]{64}).*/\1/' | head -1)
 
+echo "restored sha256sum from PDF: " $bPDF
+echo "original sha256sum embedded: " $bEmbedded
 if [ "x$bPDF" == "x$bEmbedded" ]; then
-        echo "restored sha256sum from PDF: " $bPDF
-        echo "original sha256sum embedded: " $bEmbedded
     echo "sha256sums MATCH :-)"
     echo
     exit 0
@@ -54,14 +54,10 @@ else
     echo
     if [ $diffret -ne 0 ]; then
         echo "diff and sha256sums do NOT match!"
-        echo "restored sha256sum from PDF: " $bPDF
-        echo "original sha256sum embedded: " $bEmbedded
         echo
         exit 11
     else
         echo "diff matches but sha256sum is missing."
-        echo "restored sha256sum from PDF: " $bPDF
-        echo "original sha256sum embedded: " $bEmbedded
         echo
         exit 1
     fi
