@@ -21,6 +21,24 @@ you don't lose or forget it.
 See some example output here:
 https://github.com/intra2net/paperbackup/raw/master/example_output.pdf
 
+###### Backup with encryption
+
+You can encrypt the data before storing it on paper using a password:
+
+```
+# Prompt for password
+paperbackup.py --password key.asc
+
+# Or provide password via command line (less secure)
+paperbackup.py --password mypassword key.asc
+
+# Or read password from file
+paperbackup.py --password-file password.txt key.asc
+```
+
+The encrypted data will be marked in the PDF with "!!!! DATA IS ENCRYPTED !!!!" 
+warning messages.
+
 ###### Restore
 
 1. Scan the papers
@@ -31,6 +49,22 @@ https://github.com/intra2net/paperbackup/raw/master/example_output.pdf
 If one or more barcodes could not be decoded, try scanning them again. If that does
 not work, type in the missing letters from the plaintext output at the end of the pdf.
 
+###### Restore encrypted data
+
+If the backup was created with encryption, you need to provide the password:
+
+```
+# Prompt for password
+paperrestore.sh scanned.pdf
+
+# Or provide password via command line
+paperrestore.sh scanned.pdf mypassword
+
+# Or read password from file (create file named scanned.pdf.pwd)
+echo "mypassword" > scanned.pdf.pwd
+paperrestore.sh scanned.pdf
+```
+
 ## Dependencies
 
 - python 3 https://www.python.org/
@@ -38,9 +72,10 @@ not work, type in the missing letters from the plaintext output at the end of th
 - PyX http://pyx.sourceforge.net/
 - LaTeX (required by PyX) https://www.latex-project.org/
 - python3-qrencode https://github.com/Arachnid/pyqrencode
-- enscript https://www.gnu.org/software/enscript/
-- ghostscript https://www.ghostscript.com/
-- ZBar http://zbar.sourceforge.net/
+- python3-cryptography https://cryptography.io/ (for encryption support)
+- reportlab https://www.reportlab.com/
+- pypdf https://github.com/py-pdf/pypdf
+- ZBar http://zbar.sourceforge.net/ (for restore operations)
 
 ## Why backup on paper?
 

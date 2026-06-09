@@ -1,33 +1,36 @@
 #!/bin/bash
 
-# restore data backed up with paperbackup.py
+# Wrapper script for paperrestore.py
+# Allows calling: paperrestore.sh backup.pdf [password]
 
-# give one file containing all qrcodes as parameter
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_SCRIPT="$SCRIPT_DIR/paperrestore.py"
 
-SCANNEDFILE=$1
+# Handle arguments
+PDF_FILE="$1"
+PASSWORD="$2"
 
-if [ -z "$SCANNEDFILE" ]; then
-    echo "give one file containing all qrcodes as parameter"
+if [ -z "$PDF_FILE" ]; then
+    echo "Usage: paperrestore.sh backup.pdf [password]"
+    echo "  backup.pdf: PDF file created by paperbackup.py"
+    echo "  password: (optional) password for encrypted backup"
     exit 1
 fi
 
-if [ ! -f "$SCANNEDFILE" ]; then
-    echo "$SCANNEDFILE is not a file"
+# Find Python executable - try python3 first, then python
+PYTHON_CMD=""
+if command -v python &> /dev/null; then
+    PYTHON_CMD="python"
+elif command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+else
+    echo "Error: Python not found. Please install Python 3"
     exit 1
 fi
 
-if [ ! -x "$(command -v zbarimg)" ]; then
-    echo "zbarimg missing"
-    exit 2
+# Call Python script
+if [ -n "$PASSWORD" ]; then
+    "$PYTHON_CMD" "$PYTHON_SCRIPT" "$PDF_FILE" --password "$PASSWORD"
+else
+    "$PYTHON_CMD" "$PYTHON_SCRIPT" "$PDF_FILE"
 fi
-
-# zbarimg ends each scanned code with a newline
-
-# each barcode content begins with ^<number><space>
-# so convert that to \0<number><space>, so sort can sort on that
-# then remove all \n\0<number><space> so we get the originial without newlines added
-
-zbarimg --raw -Sdisable -Sqrcode.enable "$SCANNEDFILE" \
-    | sed -e "s/\^/\x0/g" \
-    | sort -z -n \
-    | sed ':a;N;$!ba;s/\n\x0[0-9]* //g;s/\x0[0-9]* //g;s/\n\x0//g'

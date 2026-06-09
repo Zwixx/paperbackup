@@ -45,6 +45,8 @@ from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.lib.pagesizes import A4, letter
 from reportlab.lib.units import cm, inch
 from pypdf import PdfReader, PdfWriter
+import getpass
+from cryptography.fernet import Fernet
 
 # constants for the size and layout of the barcodes on page
 max_bytes_in_barcode = 140
@@ -80,6 +82,84 @@ def create_barcode(chunkdata):
     return img
 
 
+def get_password(args):
+    """Get password from arguments, file, or prompt."""
+    if args.password_file:
+        # Read password from file
+        if not os.path.isfile(args.password_file):
+            raise RuntimeError('Password file {} not found'.format(args.password_file))
+        with open(args.password_file, 'r') as f:
+            password = f.read().strip()
+        logging.info('Password loaded from file: {}'.format(args.password_file))
+    elif args.password and args.password != '__prompt__':
+        # Use password from command line argument
+        password = args.password
+        logging.info('Password provided via command line')
+    else:
+        # Prompt for password
+        password = getpass.getpass('Enter encryption password: ')
+    
+    if not password:
+        raise RuntimeError('Password cannot be empty')
+    
+    return password
+
+
+def derive_key_from_password(password, salt=None):
+    """Derive encryption key from password using PBKDF2."""
+    if salt is None:
+        # Generate a random salt
+        salt = os.urandom(16)
+    
+    # Use hashlib's PBKDF2
+    key_material = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 100000)
+    # Convert to base64 for Fernet (needs exactly 32 bytes)
+    key = base64.urlsafe_b64encode(key_material[:32])
+    return key, salt
+
+
+def encrypt_data(data, password):
+    """Encrypt data with password and return encrypted data with salt prepended."""
+    key, salt = derive_key_from_password(password)
+    f = Fernet(key)
+    encrypted = f.encrypt(data)
+    # Prepend salt to encrypted data for later decryption
+    # Format: "ENC:" + base64(salt) + ":" + encrypted_token
+    encrypted_with_salt = b'ENC:' + base64.b64encode(salt) + b':' + encrypted
+    return encrypted_with_salt
+
+
+def decrypt_data(encrypted_data, password):
+    """Decrypt data with password. Input should start with 'ENC:'."""
+    if not encrypted_data.startswith(b'ENC:'):
+        raise ValueError('Data does not start with ENC: marker')
+    
+    # Remove the 'ENC:' prefix and extract salt and encrypted message
+    encrypted_data = encrypted_data[4:]  # Remove 'ENC:'
+    
+    # Find the separator between salt and encrypted data
+    parts = encrypted_data.split(b':')
+    if len(parts) < 2:
+        raise ValueError('Invalid encrypted data format')
+    
+    salt_b64 = parts[0]
+    encrypted_msg = b':'.join(parts[1:])
+    
+    # Decode the salt
+    salt = base64.b64decode(salt_b64)
+    
+    # Derive the key using the same salt
+    key, _ = derive_key_from_password(password, salt)
+    
+    # Decrypt the data
+    f = Fernet(key)
+    try:
+        decrypted = f.decrypt(encrypted_msg)
+        return decrypted
+    except Exception as e:
+        raise ValueError('Decryption failed. Wrong password or corrupted data: {}'.format(str(e)))
+
+
 def finish_page(pdf, canv, pageno):
     canv.text(10, 0.6, "Page %i" % (pageno+1))
     pdf.append(document.page(canv, paperformat=paperformat_obj,
@@ -101,6 +181,10 @@ parser.add_argument('-s', dest='paper_size', nargs=1, default=['a4'],
                     help='paper size: a4 or letter (default: a4)')
 parser.add_argument('-n', '--no-text', dest='no_text', action='store_true',
                     help='do not include the text/plaintext content in the PDF')
+parser.add_argument('--password', dest='password', nargs='?', const='__prompt__', default=None,
+                    help='password for encryption (without value: prompt for password)')
+parser.add_argument('--password-file', dest='password_file', default=None,
+                    help='file containing the password for encryption')
 parser.add_argument('input_file', nargs=1,
                     help='file to process (perhaps base64-encoded)')
 
@@ -190,9 +274,24 @@ if not os.path.isfile(input_file):
     raise RuntimeError('File {} not found'.format(input_file))
 just_filename = os.path.basename(input_file)
 
+# check if encryption is requested
+encrypt_flag = False
+password = None
+if args.password or args.password_file:
+    encrypt_flag = True
+    password = get_password(args)
+    logging.info('Data will be encrypted before backup')
+
 # read file as binary to avoid encoding issues
 with open(just_filename, 'rb') as inputfile:
     ascdata_bytes = inputfile.read()
+
+# Calculate checksum BEFORE encryption (of original file)
+checksum_original = hashlib.sha256(ascdata_bytes).hexdigest()
+
+# encrypt the data if password is provided
+if encrypt_flag:
+    ascdata_bytes = encrypt_data(ascdata_bytes, password)
 
 # encode the entire input data to base64 for universal compatibility
 # this allows any character/binary data to be stored
@@ -305,10 +404,15 @@ for line in splitlines:
     chksumlines.append(line)
 
 # we also want a checksum which the restored file should match
-checksum = hashlib.sha256(bytes(ascdata_b64, 'utf8')).hexdigest()
+# Use the original file checksum (before encryption)
+checksum = checksum_original
 
 # add some documentation around the plaintest
 outlines=[]
+if encrypt_flag:
+    outlines.append("!!!! DATA IS ENCRYPTED !!!")
+    outlines.append("You must provide the password to decrypt the data.")
+    outlines.append("")
 coldoc=" "*splitat
 coldoc+=" | MD5"
 outlines.append(coldoc)
@@ -316,8 +420,12 @@ outlines.extend(chksumlines)
 outlines.append("")
 outlines.append("")
 outlines.append("DATA IS BASE64 ENCODED - Decode after restoration!")
+if encrypt_flag:
+    outlines.append("")
+    outlines.append("WARNING: Data is ENCRYPTED with password!")
+    outlines.append("After decoding from base64, decrypt using paperbackup-verify.sh")
 outlines.append("")
-outlines.append("sha256sum of base64 encoded data:")
+outlines.append("sha256sum of restored file:")
 outlines.append("%s"%checksum)
 outlines += r"""
 
@@ -344,11 +452,14 @@ This shell script should restore the content inline
 # 3. convert that to \0<number><space>, so sort can sort on that
 # 4. then remove all \n\0<number><space> so we get the original without \n
 # 5. base64 -d decodes the base64 string back to the original data
+# 6. if data starts with "ENC:" prefix, decrypt with password
+# 7. verify the sha256sum matches the embedded checksum
 
 """.split("\n")
 
-# create plaintext PDF using reportlab if not disabled
-if not args.no_text:
+# create plaintext PDF using reportlab
+# Always create it, but with minimal content if --no-text is specified
+if True:  # Always create the text PDF
     # create plaintext PDF using reportlab instead of enscript
     # convert paperformat string to reportlab pagesize
     pagesize = A4 if paperformat_str == "A4" else letter
@@ -376,9 +487,24 @@ if not args.no_text:
     c.drawString(margin, y_position, header)
     y_position -= line_height * 1.5
 
-    # write all outline lines
+    # If --no-text, only write metadata and checksum
+    if args.no_text:
+        minimal_lines = []
+        minimal_lines.append("==== BACKUP METADATA ====")
+        if encrypt_flag:
+            minimal_lines.append("Status: ENCRYPTED")
+        else:
+            minimal_lines.append("Status: Not encrypted")
+        minimal_lines.append("")
+        minimal_lines.append("sha256sum of restored file:")
+        minimal_lines.append("%s" % checksum)
+        lines_to_write = minimal_lines
+    else:
+        lines_to_write = outlines
+
+    # write all lines
     c.setFont(font_name, font_size)
-    for line in outlines:
+    for line in lines_to_write:
         if line_num >= lines_per_page:
             # new page
             c.showPage()
@@ -407,12 +533,11 @@ reader = PdfReader(barcode_pdf_bytes)
 for page in reader.pages:
     writer.add_page(page)
 
-# read the text PDF from BytesIO if it was created
-if not args.no_text:
-    text_pdf_bytes.seek(0)
-    reader = PdfReader(text_pdf_bytes)
-    for page in reader.pages:
-        writer.add_page(page)
+# Always add the text PDF (it now contains at least the checksum)
+text_pdf_bytes.seek(0)
+reader = PdfReader(text_pdf_bytes)
+for page in reader.pages:
+    writer.add_page(page)
 
 # write the combined PDF
 with open(just_filename + ".pdf", "wb") as output_pdf:
