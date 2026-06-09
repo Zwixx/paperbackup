@@ -99,6 +99,8 @@ parser.add_argument('-r', dest='rows', nargs=1, default=[5], type=int,
                     help='number of rows per page (default: 5)')
 parser.add_argument('-s', dest='paper_size', nargs=1, default=['a4'],
                     help='paper size: a4 or letter (default: a4)')
+parser.add_argument('-n', '--no-text', dest='no_text', action='store_true',
+                    help='do not include the text/plaintext content in the PDF')
 parser.add_argument('input_file', nargs=1,
                     help='file to process (perhaps base64-encoded)')
 
@@ -345,69 +347,72 @@ This shell script should restore the content inline
 
 """.split("\n")
 
-# create plaintext PDF using reportlab instead of enscript
-# convert paperformat string to reportlab pagesize
-pagesize = A4 if paperformat_str == "A4" else letter
+# create plaintext PDF using reportlab if not disabled
+if not args.no_text:
+    # create plaintext PDF using reportlab instead of enscript
+    # convert paperformat string to reportlab pagesize
+    pagesize = A4 if paperformat_str == "A4" else letter
 
-# prepare the canvas with Courier font for monospace output
-text_pdf_bytes = BytesIO()
-c = rl_canvas.Canvas(text_pdf_bytes, pagesize=pagesize)
+    # prepare the canvas with Courier font for monospace output
+    text_pdf_bytes = BytesIO()
+    c = rl_canvas.Canvas(text_pdf_bytes, pagesize=pagesize)
 
-# calculate font and margin sizes
-font_name = "Courier"
-font_size = 10
-margin = 0.5 * inch
-page_width, page_height = pagesize
-line_height = font_size * 1.2
-lines_per_page = int((page_height - 2 * margin) / line_height)
+    # calculate font and margin sizes
+    font_name = "Courier"
+    font_size = 10
+    margin = 0.5 * inch
+    page_width, page_height = pagesize
+    line_height = font_size * 1.2
+    lines_per_page = int((page_height - 2 * margin) / line_height)
 
-# write the header and content
-header = "%s | %s | Page 1" % (just_filename, input_file_modification)
-page_num = 1
-line_num = 0
-y_position = page_height - margin
+    # write the header and content
+    header = "%s | %s | Page 1" % (just_filename, input_file_modification)
+    page_num = 1
+    line_num = 0
+    y_position = page_height - margin
 
-# header on first page
-c.setFont(font_name, font_size - 2)
-c.drawString(margin, y_position, header)
-y_position -= line_height * 1.5
+    # header on first page
+    c.setFont(font_name, font_size - 2)
+    c.drawString(margin, y_position, header)
+    y_position -= line_height * 1.5
 
-# write all outline lines
-c.setFont(font_name, font_size)
-for line in outlines:
-    if line_num >= lines_per_page:
-        # new page
-        c.showPage()
-        page_num += 1
-        header = "%s | %s | Page %d" % (just_filename, input_file_modification, page_num)
-        c.setFont(font_name, font_size - 2)
-        c.drawString(margin, page_height - margin, header)
-        c.setFont(font_name, font_size)
-        y_position = page_height - margin - line_height * 1.5
-        line_num = 0
-    
-    c.drawString(margin, y_position, line)
-    y_position -= line_height
-    line_num += 1
+    # write all outline lines
+    c.setFont(font_name, font_size)
+    for line in outlines:
+        if line_num >= lines_per_page:
+            # new page
+            c.showPage()
+            page_num += 1
+            header = "%s | %s | Page %d" % (just_filename, input_file_modification, page_num)
+            c.setFont(font_name, font_size - 2)
+            c.drawString(margin, page_height - margin, header)
+            c.setFont(font_name, font_size)
+            y_position = page_height - margin - line_height * 1.5
+            line_num = 0
+        
+        c.drawString(margin, y_position, line)
+        y_position -= line_height
+        line_num += 1
 
-c.save()
+    c.save()
 
-# merge the two PDFs (barcodes and text) using pypdf
+# merge PDFs using pypdf
 writer = PdfWriter()
 
-# seek to beginning of both BytesIO objects before reading
+# seek to beginning of BytesIO objects before reading
 barcode_pdf_bytes.seek(0)
-text_pdf_bytes.seek(0)
 
 # read the barcode PDF from BytesIO
 reader = PdfReader(barcode_pdf_bytes)
 for page in reader.pages:
     writer.add_page(page)
 
-# read the text PDF from BytesIO
-reader = PdfReader(text_pdf_bytes)
-for page in reader.pages:
-    writer.add_page(page)
+# read the text PDF from BytesIO if it was created
+if not args.no_text:
+    text_pdf_bytes.seek(0)
+    reader = PdfReader(text_pdf_bytes)
+    for page in reader.pages:
+        writer.add_page(page)
 
 # write the combined PDF
 with open(just_filename + ".pdf", "wb") as output_pdf:
