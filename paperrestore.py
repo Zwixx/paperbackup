@@ -15,7 +15,7 @@ from io import BytesIO
 
 # Try to import required libraries
 try:
-    from pyzbar.pyzbar import decode
+    from pyzbar.pyzbar import decode, ZBarSymbol
     from PIL import Image
     import pdf2image
 except ImportError as e:
@@ -72,7 +72,7 @@ def extract_qr_codes_from_pdf(pdf_path):
     
     # Extract QR codes from each image
     for page_num, image in enumerate(images):
-        decoded_objects = decode(image)
+        decoded_objects = decode(image, symbols=[ZBarSymbol.QRCODE])
         
         for obj in decoded_objects:
             try:
